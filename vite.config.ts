@@ -5,8 +5,20 @@ import path from 'path';
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
+function resolveBasePath(raw?: string): string {
+  const trimmed = (raw ?? '/').trim();
+  if (!trimmed || trimmed === '/') {
+    return '/';
+  }
+  const withLeading = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  return withLeading.endsWith('/') ? withLeading : `${withLeading}/`;
+}
+
 export default defineConfig(() => {
+  const base = resolveBasePath(process.env.VITE_BASE_PATH);
+
   return {
+    base,
     // Strictly restrict browser-exposed env variables to VITE_* only.
     envPrefix: 'VITE_',
     plugins: [
@@ -22,7 +34,7 @@ export default defineConfig(() => {
           'pwa-maskable-512x512.png',
         ],
         manifest: {
-          id: '/',
+          id: base,
           name: 'Festola Business Hub',
           short_name: 'Festola',
           description:
@@ -30,23 +42,23 @@ export default defineConfig(() => {
           theme_color: '#991B1B',
           background_color: '#F4F5F7',
           display: 'standalone',
-          start_url: '/',
-          scope: '/',
+          start_url: base,
+          scope: base,
           icons: [
             {
-              src: '/pwa-192x192.png',
+              src: `${base}pwa-192x192.png`,
               sizes: '192x192',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/pwa-512x512.png',
+              src: `${base}pwa-512x512.png`,
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/pwa-maskable-512x512.png',
+              src: `${base}pwa-maskable-512x512.png`,
               sizes: '512x512',
               type: 'image/png',
               purpose: 'maskable',
@@ -109,6 +121,23 @@ export default defineConfig(() => {
           const distAssets = path.resolve(distDir, 'src/assets');
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, { recursive: true, force: true });
+          }
+        },
+      },
+      // Emits dist/404.html and dist/.nojekyll so GitHub Pages serves client-side
+      // routes (/features, /pricing, /how-it-works, /about, /contact) without 404s.
+      {
+        name: 'github-pages-spa-fallback',
+        apply: 'build',
+        closeBundle(error?: Error): void {
+          if (error) {
+            return;
+          }
+          const distDir = path.resolve(__dirname, 'dist');
+          const indexHtml = path.resolve(distDir, 'index.html');
+          if (fs.existsSync(indexHtml)) {
+            fs.copyFileSync(indexHtml, path.resolve(distDir, '404.html'));
+            fs.writeFileSync(path.resolve(distDir, '.nojekyll'), '');
           }
         },
       },

@@ -279,10 +279,13 @@ export function AppRoutes() {
   );
 }
 
+const rawBase = import.meta.env.BASE_URL || '/';
+const routerBasename = rawBase === '/' ? '/' : rawBase.replace(/\/+$/, '');
+
 export default function App() {
   return (
     <ErrorBoundary>
-      <BrowserRouter>
+      <BrowserRouter basename={routerBasename}>
         <AuthProvider>
           <ToastProvider>
             <AppRoutes />
