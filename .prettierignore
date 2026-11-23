@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dev-dist/
+build/
+coverage/
+.aistudio/
+public/assets/aistudio/
+bun.lock
+package-lock.json
+supabase/migrations/
+supabase/tests/
+supabase/rollback/

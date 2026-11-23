@@ -1,0 +1,93 @@
+export interface ApiRequestOptions {
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  accessToken?: string | null;
+  businessId?: string | null;
+  deviceId?: string | null;
+  idempotencyKey?: string;
+  body?: unknown;
+}
+
+export interface ApiErrorPayload {
+  code: string;
+  message: string;
+  details: Record<string, unknown>;
+}
+
+export interface ApiPaginationMeta {
+  limit: number;
+  offset: number;
+  total: number;
+  hasMore: boolean;
+}
+
+export interface ApiResponse<T> {
+  success: boolean;
+  data?: T;
+  meta?: ApiPaginationMeta;
+  error?: ApiErrorPayload;
+}
+
+/**
+ * Typed /api/v1 client enforcing standard System Architecture §7.1 headers:
+ * - Authorization: Bearer <token> (user JWT from Supabase Auth; zero privileged keys in browser)
+ * - X-Business-ID: <uuid> (context only; server validates authorization)
+ * - X-Device-ID: <uuid> (for registered offline device sync)
+ * - Idempotency-Key: <uuid> (for protected write operations)
+ */
+export async function apiRequest<T>(
+  path: string,
+  options: ApiRequestOptions = {},
+): Promise<ApiResponse<T>> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+  };
+
+  if (options.body !== undefined) {
+    headers['Content-Type'] = 'application/json';
+  }
+  if (options.accessToken) {
+    headers['Authorization'] = `Bearer ${options.accessToken}`;
+  }
+  if (options.businessId) {
+    headers['X-Business-ID'] = options.businessId;
+  }
+  if (options.deviceId) {
+    headers['X-Device-ID'] = options.deviceId;
+  }
+  if (options.idempotencyKey) {
+    headers['Idempotency-Key'] = options.idempotencyKey;
+  }
+
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+
+  try {
+    const response = await fetch(`/api/v1${normalizedPath}`, {
+      method: options.method ?? 'GET',
+      headers,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    });
+
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!contentType.includes('application/json')) {
+      return {
+        success: false,
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `Unexpected server response (${response.status}).`,
+          details: {},
+        },
+      };
+    }
+
+    return (await response.json()) as ApiResponse<T>;
+  } catch {
+    return {
+      success: false,
+      error: {
+        code: 'NETWORK_ERROR',
+        message: 'Unable to reach Festola servers. Check your internet connection and try again.',
+        details: {},
+      },
+    };
+  }
+}

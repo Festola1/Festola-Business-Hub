@@ -1,0 +1,44 @@
+name: Festola CI Verification
+
+on:
+  push:
+    branches: [main, staging, develop, 'feat/**']
+  pull_request:
+    branches: [main, staging, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Typecheck, Lint, Format, Test, Build & Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint (including client/server boundary rules)
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Automated tests
+        run: npm run test:run
+
+      - name: Production build
+        run: npm run build
+
+      - name: Client bundle secret-leak scan
+        run: npm run verify:secrets

@@ -1,0 +1,6 @@
+{
+  "name": "Festola Business Hub",
+  "description": "Multi-tenant, offline-first business management PWA for Nigerian and African SMEs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,72 @@
+/* Festola Business Hub — System Architecture §6.1 Approved Brand Baseline */
+:root {
+  --festola-primary: #991b1b;
+  --festola-primary-hover: #7f1d1d;
+  --festola-primary-soft: #fef2f2;
+  --festola-surface: #ffffff;
+  --festola-background: #f4f5f7;
+  --festola-foreground: #18181b;
+  --festola-muted: #52525b;
+  --festola-border: #e4e4e7;
+
+  /* Semantic Status Colors (always paired with explicit text labels) */
+  --festola-status-success: #16a34a;
+  --festola-status-success-soft: #f0fdf4;
+  --festola-status-warning: #d97706;
+  --festola-status-warning-soft: #fffbeb;
+  --festola-status-error: #dc2626;
+  --festola-status-error-soft: #fef2f2;
+
+  /* Typography */
+  --festola-font-display: 'Plus Jakarta Sans', 'Public Sans', system-ui, sans-serif;
+  --festola-font-body: 'Public Sans', system-ui, -apple-system, sans-serif;
+  --festola-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--festola-background);
+  color: var(--festola-foreground);
+  font-family: var(--festola-font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--festola-font-display);
+  text-wrap: balance;
+}
+
+.font-mono-tabular {
+  font-family: var(--festola-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+:focus-visible {
+  outline: 2px solid var(--festola-primary);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
