@@ -12,6 +12,7 @@ import {
   CreateCustomerSchema,
   CreateDebtPaymentSchema,
   CustomerListQuerySchema,
+  DebtPaymentListQuerySchema,
   ReverseFinancialRecordSchema,
   UpdateCustomerSchema,
 } from '../commerce/commerce.types.ts';
@@ -19,6 +20,28 @@ import { runIdempotentRoute, type DomainRouterDeps } from '../commerce/route-dep
 
 export function createCustomersRouter(deps: DomainRouterDeps): Router {
   const router = express.Router();
+
+  router.get(
+    '/debt-payments',
+    deps.requireTenant,
+    requirePermission('debts.collect'),
+    deps.rateLimiters.standardRead,
+    asyncHandler(async (req, res) => {
+      const query = parseQuery(DebtPaymentListQuerySchema, req.query);
+      const page = await deps.getService().listBusinessDebtPayments(req.tenantContext!, {
+        limit: query.limit,
+        offset: query.offset,
+        status: query.status,
+        from: query.from,
+        to: query.to,
+      });
+      sendPaginated(res, 'debtPayments', page.items, {
+        limit: query.limit,
+        offset: query.offset,
+        total: page.total,
+      });
+    }),
+  );
 
   router.get(
     '/customers',

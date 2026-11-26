@@ -266,6 +266,20 @@ export interface CustomerDebtPaymentRecord {
   receipt: ReceiptRecord | null;
 }
 
+export interface BusinessDebtPaymentListItem extends CustomerDebtPaymentRecord {
+  customerName: string;
+}
+
+export interface SalesByCategoryRow {
+  categoryId: string | null;
+  categoryName: string;
+  unitsSold: string;
+  revenue: string;
+  cogs: string;
+  grossProfit: string;
+  sharePercent: number;
+}
+
 export interface ExpenseCategoryRecord {
   id: string;
   businessId: string;
@@ -534,6 +548,7 @@ export const CreateRestockBatchSchema = z
 export const SaleListQuerySchema = BasePaginationQuerySchema.extend({
   status: z.enum(['completed', 'partially_returned', 'returned', 'voided']).optional(),
   paymentStatus: z.enum(['paid', 'partial', 'unpaid']).optional(),
+  paymentMethod: z.enum(['cash', 'transfer', 'pos_card', 'credit']).optional(),
   customerId: z.string().uuid().optional(),
   cashierUserId: z.string().uuid().optional(),
 });
@@ -660,6 +675,10 @@ export const ReverseFinancialRecordSchema = z
     reason: z.string().trim().min(5).max(300),
   })
   .strict();
+
+export const DebtPaymentListQuerySchema = BasePaginationQuerySchema.extend({
+  status: z.enum(['posted', 'reversed']).optional(),
+});
 
 // Expenses
 export const CreateExpenseCategorySchema = z

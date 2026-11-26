@@ -5,6 +5,7 @@ import type { CommerceRepository, CommerceTx } from './commerce.repository.ts';
 import type {
   ActiveDeviceLookup,
   AuditLogRecord,
+  BusinessDebtPaymentListItem,
   BusinessLocationRecord,
   BusinessTaxAndStockConfig,
   CustomerDebtPaymentRecord,
@@ -20,6 +21,8 @@ import type {
   SaleItemRecord,
   SalePaymentRecord,
   SaleRecord,
+  SaleRefundRecord,
+  SaleReturnItemRecord,
   SaleReturnRecord,
   StockMovementRecord,
   SubscriptionInvoiceRecord,
@@ -92,20 +95,22 @@ export class PgCommerceRepository implements CommerceRepository {
       saleRow: Record<string, unknown>,
     ): Promise<SaleRecord> => {
       const saleId = String(saleRow.id);
-      const [itemsRes, paymentsRes, receiptRes] = await Promise.all([
-        client.query(
-          `SELECT * FROM public.sale_items WHERE business_id = $1 AND sale_id = $2 ORDER BY id ASC`,
-          [businessId, saleId],
-        ),
-        client.query(
-          `SELECT * FROM public.sale_payments WHERE business_id = $1 AND sale_id = $2 ORDER BY created_at ASC`,
-          [businessId, saleId],
-        ),
-        client.query(
-          `SELECT * FROM public.receipts WHERE business_id = $1 AND sale_id = $2 LIMIT 1`,
-          [businessId, saleId],
-        ),
-      ]);
+      const itemsRes = await client.query(
+        `SELECT * FROM public.sale_items WHERE business_id = $1 AND sale_id = $2 ORDER BY id ASC`,
+        [businessId, saleId],
+      );
+      const paymentsRes = await client.query(
+        `SELECT * FROM public.sale_payments WHERE business_id = $1 AND sale_id = $2 ORDER BY created_at ASC`,
+        [businessId, saleId],
+      );
+      const receiptRes = await client.query(
+        `SELECT * FROM public.receipts WHERE business_id = $1 AND sale_id = $2 LIMIT 1`,
+        [businessId, saleId],
+      );
+      const returnsRes = await client.query(
+        `SELECT * FROM public.sale_returns WHERE business_id = $1 AND sale_id = $2 ORDER BY created_at ASC`,
+        [businessId, saleId],
+      );
 
       const items: SaleItemRecord[] = itemsRes.rows.map((r) => ({
         id: String(r.id),
@@ -151,6 +156,72 @@ export class PgCommerceRepository implements CommerceRepository {
           }
         : null;
 
+      let returns: SaleReturnRecord[] = [];
+      if (returnsRes.rows.length > 0) {
+        const returnIds = returnsRes.rows.map((r) => String(r.id));
+        const retItemsRes = await client.query(
+          `SELECT * FROM public.sale_return_items WHERE business_id = $1 AND sale_return_id = ANY($2::uuid[])`,
+          [businessId, returnIds],
+        );
+        const refundsRes = await client.query(
+          `SELECT * FROM public.sale_refunds WHERE business_id = $1 AND sale_return_id = ANY($2::uuid[])`,
+          [businessId, returnIds],
+        );
+
+        const itemsByReturn = new Map<string, SaleReturnItemRecord[]>();
+        for (const ri of retItemsRes.rows) {
+          const rid = String(ri.sale_return_id);
+          const list = itemsByReturn.get(rid) ?? [];
+          list.push({
+            id: String(ri.id),
+            businessId: String(ri.business_id),
+            saleReturnId: rid,
+            saleItemId: String(ri.sale_item_id),
+            productId: String(ri.product_id),
+            quantityReturned: String(ri.quantity_returned),
+            disposition: String(ri.disposition) as SaleReturnItemRecord['disposition'],
+            unitPriceSnapshot: String(ri.unit_price_snapshot),
+            taxReversed: String(ri.tax_reversed ?? '0.00'),
+            lineReversedTotal: String(ri.line_reversed_total),
+            unitCostSnapshot: String(ri.unit_cost_snapshot),
+          });
+          itemsByReturn.set(rid, list);
+        }
+
+        const refundByReturn = new Map<string, SaleRefundRecord>();
+        for (const rf of refundsRes.rows) {
+          const rid = String(rf.sale_return_id);
+          refundByReturn.set(rid, {
+            id: String(rf.id),
+            businessId: String(rf.business_id),
+            saleReturnId: rid,
+            method: String(rf.payment_method) as SaleRefundRecord['method'],
+            amount: String(rf.amount),
+            referenceNote: rf.reference_note ? String(rf.reference_note) : null,
+            processedBy: String(rf.processed_by),
+            createdAt: toIso(rf.created_at),
+          });
+        }
+
+        returns = returnsRes.rows.map((r) => {
+          const rid = String(r.id);
+          return {
+            id: rid,
+            businessId: String(r.business_id),
+            saleId: String(r.sale_id),
+            returnType: String(r.return_type) as SaleReturnRecord['returnType'],
+            reason: String(r.reason),
+            totalReversed: String(r.total_reversed),
+            debtReducedAmount: String(r.debt_reduced_amount ?? '0.00'),
+            refundAmount: String(r.refund_amount ?? '0.00'),
+            processedBy: String(r.processed_by),
+            createdAt: toIso(r.created_at),
+            items: itemsByReturn.get(rid) ?? [],
+            refund: refundByReturn.get(rid) ?? null,
+          };
+        });
+      }
+
       return {
         id: saleId,
         businessId,
@@ -181,7 +252,7 @@ export class PgCommerceRepository implements CommerceRepository {
         items,
         payments,
         receipt,
-        returns: [],
+        returns,
       };
     };
 
@@ -834,20 +905,42 @@ export class PgCommerceRepository implements CommerceRepository {
         return res.rows[0] ? hydrateSale(businessId, res.rows[0]) : null;
       },
 
+      async lockSaleById(businessId, saleId) {
+        const res = await client.query(
+          `SELECT * FROM public.sales WHERE business_id = $1 AND id = $2 FOR UPDATE`,
+          [businessId, saleId],
+        );
+        return res.rows[0] ? hydrateSale(businessId, res.rows[0]) : null;
+      },
+
       async listSales(businessId, opts) {
         const res = await client.query(
-          `SELECT *, COUNT(*) OVER() AS total_count
-             FROM public.sales
-            WHERE business_id = $1
-              AND ($2::text IS NULL OR status = $2)
-              AND ($3::text IS NULL OR payment_status = $3)
-              AND ($4::uuid IS NULL OR customer_id = $4)
-              AND ($5::uuid IS NULL OR sold_by = $5)
-              AND ($6::text IS NULL OR sale_number ILIKE '%' || $6 || '%')
-              AND ($7::timestamptz IS NULL OR sold_at >= $7)
-              AND ($8::timestamptz IS NULL OR sold_at <= $8)
-            ORDER BY sold_at DESC
-            LIMIT $9 OFFSET $10`,
+          `SELECT s.*, COUNT(*) OVER() AS total_count
+             FROM public.sales s
+            WHERE s.business_id = $1
+              AND ($2::text IS NULL OR s.status = $2)
+              AND ($3::text IS NULL OR s.payment_status = $3)
+              AND ($4::uuid IS NULL OR s.customer_id = $4)
+              AND ($5::uuid IS NULL OR s.sold_by = $5)
+              AND (
+                $6::text IS NULL
+                OR s.sale_number ILIKE '%' || $6 || '%'
+                OR COALESCE(s.notes, '') ILIKE '%' || $6 || '%'
+              )
+              AND ($7::timestamptz IS NULL OR s.sold_at >= $7)
+              AND ($8::timestamptz IS NULL OR s.sold_at <= $8)
+              AND (
+                $9::text IS NULL
+                OR EXISTS (
+                  SELECT 1
+                    FROM public.sale_payments sp
+                   WHERE sp.business_id = s.business_id
+                     AND sp.sale_id = s.id
+                     AND sp.payment_method = $9
+                )
+              )
+            ORDER BY s.sold_at DESC
+            LIMIT $10 OFFSET $11`,
           [
             businessId,
             opts.status ?? null,
@@ -857,11 +950,15 @@ export class PgCommerceRepository implements CommerceRepository {
             opts.search ?? null,
             opts.from ?? null,
             opts.to ?? null,
+            opts.paymentMethod ?? null,
             opts.limit,
             opts.offset,
           ],
         );
-        const items = await Promise.all(res.rows.map((row) => hydrateSale(businessId, row)));
+        const items: SaleRecord[] = [];
+        for (const row of res.rows) {
+          items.push(await hydrateSale(businessId, row));
+        }
         return {
           total: res.rows[0] ? Number(res.rows[0].total_count) : 0,
           items,
@@ -934,13 +1031,19 @@ export class PgCommerceRepository implements CommerceRepository {
             ],
           );
         }
+        for (const [saleItemId, returnedQty] of Object.entries(patch.itemReturnedTotals)) {
+          await client.query(
+            `UPDATE public.sale_items
+                SET quantity_returned = $3
+              WHERE business_id = $1 AND id = $2`,
+            [businessId, saleItemId, returnedQty],
+          );
+        }
         const refreshed = await client.query(
           `SELECT * FROM public.sales WHERE business_id = $1 AND id = $2 LIMIT 1`,
           [businessId, saleId],
         );
-        const hydrated = await hydrateSale(businessId, refreshed.rows[0]);
-        hydrated.returns.push(ret);
-        return hydrated;
+        return hydrateSale(businessId, refreshed.rows[0]);
       },
 
       async updateSaleCreditPayment(businessId, saleId, patch) {
@@ -1017,6 +1120,14 @@ export class PgCommerceRepository implements CommerceRepository {
         return res.rows[0] ? mapCustomerRow(res.rows[0]) : null;
       },
 
+      async lockCustomerById(businessId, customerId) {
+        const res = await client.query(
+          `SELECT * FROM public.customers WHERE business_id = $1 AND id = $2 FOR UPDATE`,
+          [businessId, customerId],
+        );
+        return res.rows[0] ? mapCustomerRow(res.rows[0]) : null;
+      },
+
       async insertCustomer(record) {
         await client.query(
           `INSERT INTO public.customers (
@@ -1078,7 +1189,11 @@ export class PgCommerceRepository implements CommerceRepository {
             FOR UPDATE`,
           [businessId, customerId],
         );
-        return Promise.all(res.rows.map((r) => hydrateSale(businessId, r)));
+        const sales: SaleRecord[] = [];
+        for (const r of res.rows) {
+          sales.push(await hydrateSale(businessId, r));
+        }
+        return sales;
       },
 
       async insertDebtPayment(record) {
@@ -1168,6 +1283,49 @@ export class PgCommerceRepository implements CommerceRepository {
           allocations: [],
           receipt: null,
         }));
+      },
+
+      async listBusinessDebtPayments(businessId, opts) {
+        const res = await client.query(
+          `SELECT dp.*, c.full_name AS customer_name, COUNT(*) OVER() AS total_count
+             FROM public.customer_debt_payments dp
+             JOIN public.customers c
+               ON c.business_id = dp.business_id AND c.id = dp.customer_id
+            WHERE dp.business_id = $1
+              AND ($2::text IS NULL OR dp.status = $2)
+              AND ($3::timestamptz IS NULL OR dp.paid_at >= $3)
+              AND ($4::timestamptz IS NULL OR dp.paid_at <= $4)
+            ORDER BY dp.paid_at DESC
+            LIMIT $5 OFFSET $6`,
+          [
+            businessId,
+            opts.status ?? null,
+            opts.from ?? null,
+            opts.to ?? null,
+            opts.limit,
+            opts.offset,
+          ],
+        );
+        return {
+          total: res.rows[0] ? Number(res.rows[0].total_count) : 0,
+          items: res.rows.map((r): BusinessDebtPaymentListItem => ({
+            id: String(r.id),
+            businessId: String(r.business_id),
+            customerId: String(r.customer_id),
+            customerName: String(r.customer_name),
+            amount: String(r.amount),
+            method: String(r.payment_method) as CustomerDebtPaymentRecord['method'],
+            referenceNote: r.reference_note ? String(r.reference_note) : null,
+            status: String(r.status) as CustomerDebtPaymentRecord['status'],
+            reversalReason: r.reversal_reason ? String(r.reversal_reason) : null,
+            reversedBy: r.reversed_by ? String(r.reversed_by) : null,
+            reversedAt: toIsoOrNull(r.reversed_at),
+            collectedBy: String(r.collected_by),
+            paidAt: toIso(r.paid_at),
+            allocations: [],
+            receipt: null,
+          })),
+        };
       },
 
       async markDebtPaymentReversed(businessId, paymentId, patch) {

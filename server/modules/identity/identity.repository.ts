@@ -736,7 +736,9 @@ export class PgIdentityRepository implements IdentityRepository {
   async lookupInvitationByTokenHash(tokenHash: string): Promise<PendingInvitationLookup | null> {
     const res = await this.db.pool.query(
       `SELECT id, business_id, email, role, status, expires_at
-       FROM public.lookup_pending_invitation_by_hash($1)`,
+       FROM public.staff_invitations
+       WHERE token_hash = $1
+       LIMIT 1`,
       [tokenHash],
     );
     const row = res.rows[0] as Record<string, unknown> | undefined;

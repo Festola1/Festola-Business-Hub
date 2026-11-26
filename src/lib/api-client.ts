@@ -1,3 +1,43 @@
+import { emitWorkspaceEvent, type WorkspaceTopic } from './workspace-events';
+
+function inferTopicsFromPath(normalizedPath: string): WorkspaceTopic[] {
+  const lower = normalizedPath.toLowerCase();
+  if (lower.includes('/sales')) {
+    return ['sales', 'inventory', 'customers', 'debts', 'notifications'];
+  }
+  if (lower.includes('/inventory')) {
+    return ['inventory', 'products', 'notifications'];
+  }
+  if (lower.includes('/product')) {
+    return ['products', 'inventory'];
+  }
+  if (lower.includes('/debt')) {
+    return ['debts', 'customers'];
+  }
+  if (lower.includes('/customer')) {
+    return ['customers', 'debts'];
+  }
+  if (lower.includes('/expense')) {
+    return ['expenses'];
+  }
+  if (lower.includes('/sync')) {
+    return ['sync', 'sales', 'inventory', 'customers', 'debts', 'notifications'];
+  }
+  if (lower.includes('/notification')) {
+    return ['notifications'];
+  }
+  if (lower.includes('/staff') || lower.includes('/invitation')) {
+    return ['staff'];
+  }
+  if (lower.includes('/billing') || lower.includes('/subscription')) {
+    return ['billing'];
+  }
+  if (lower.includes('/business') || lower.includes('/location')) {
+    return ['settings'];
+  }
+  return ['all'];
+}
+
 export interface ApiRequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   accessToken?: string | null;
@@ -38,6 +78,7 @@ export async function apiRequest<T>(
   path: string,
   options: ApiRequestOptions = {},
 ): Promise<ApiResponse<T>> {
+  const method = options.method ?? 'GET';
   const headers: Record<string, string> = {
     Accept: 'application/json',
   };
@@ -62,7 +103,7 @@ export async function apiRequest<T>(
 
   try {
     const response = await fetch(`/api/v1${normalizedPath}`, {
-      method: options.method ?? 'GET',
+      method,
       headers,
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     });
@@ -79,7 +120,11 @@ export async function apiRequest<T>(
       };
     }
 
-    return (await response.json()) as ApiResponse<T>;
+    const payload = (await response.json()) as ApiResponse<T>;
+    if (payload.success && method !== 'GET' && options.businessId) {
+      emitWorkspaceEvent(options.businessId, inferTopicsFromPath(normalizedPath));
+    }
+    return payload;
   } catch {
     return {
       success: false,

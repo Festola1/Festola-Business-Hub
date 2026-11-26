@@ -20,6 +20,8 @@ export type Permission =
   | 'inventory.receive_and_adjust'
   | 'expenses.manage'
   | 'sync_conflicts.resolve'
+  | 'sales.apply_discount'
+  | 'sales.authorize_credit_override'
   | 'sales.void_or_return'
   | 'reports.view_basic'
   | 'attachments.manage'
@@ -44,6 +46,8 @@ const ROLE_PERMISSIONS: Record<BusinessRole, ReadonlySet<Permission>> = {
     'inventory.receive_and_adjust',
     'expenses.manage',
     'sync_conflicts.resolve',
+    'sales.apply_discount',
+    'sales.authorize_credit_override',
     'sales.void_or_return',
     'reports.view_basic',
     'attachments.manage',
@@ -67,6 +71,8 @@ const ROLE_PERMISSIONS: Record<BusinessRole, ReadonlySet<Permission>> = {
     'inventory.receive_and_adjust',
     'expenses.manage',
     'sync_conflicts.resolve',
+    'sales.apply_discount',
+    'sales.authorize_credit_override',
     'sales.void_or_return',
     'reports.view_basic',
     'attachments.manage',

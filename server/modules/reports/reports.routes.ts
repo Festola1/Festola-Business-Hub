@@ -36,6 +36,20 @@ export function createReportsRouter(deps: DomainRouterDeps): Router {
   );
 
   router.get(
+    '/reports/sales-by-category',
+    deps.requireTenant,
+    requirePermission('reports.view_basic'),
+    deps.rateLimiters.reports,
+    asyncHandler(async (req, res) => {
+      const query = parseQuery(ReportDateRangeQuerySchema, req.query);
+      const categories = await deps
+        .getService()
+        .getSalesByCategoryReport(req.tenantContext!, query);
+      res.status(200).json({ success: true, data: { categories } });
+    }),
+  );
+
+  router.get(
     '/reports/top-products',
     deps.requireTenant,
     requirePermission('reports.view_basic'),

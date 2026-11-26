@@ -1,0 +1,420 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 0: Global Safety Net — deny all unmatched paths by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Phase 3: Hardened Global Helpers
+    // =========================================================================
+
+    function isValidId(id) {
+      return id is string
+        && id.size() >= 1
+        && id.size() <= 128
+        && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser()
+        && (
+          exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+          || request.auth.token.email == 'festusginah25@gmail.com'
+        );
+    }
+
+    // Master Gate relational check against parent Business document
+    function ownsBusiness(businessId) {
+      return exists(/databases/$(database)/documents/businesses/$(businessId))
+        && get(/databases/$(database)/documents/businesses/$(businessId)).data.ownerId == request.auth.uid;
+    }
+
+    // =========================================================================
+    // Pillar 2: Standalone Validation Blueprints (Anti-Update-Gap)
+    // Note: No existing()/diff() or DB reads inside validation helpers.
+    // =========================================================================
+
+    function isValidUserPublicProfile(data, userId) {
+      return data.keys().hasAll([
+          'uid',
+          'displayName',
+          'defaultBusinessId',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'displayName',
+          'defaultBusinessId',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == userId
+        && data.uid == request.auth.uid
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 120
+        && isValidId(data.defaultBusinessId)
+        && data.status in ['active', 'archived']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivateInfo(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'phone', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.uid == userId
+        && data.uid == request.auth.uid
+        && data.email is string
+        && data.email.size() >= 3
+        && data.email.size() <= 254
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 32))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBusiness(data, businessId) {
+      return data.keys().hasAll([
+          'id',
+          'ownerId',
+          'name',
+          'currency',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'ownerId',
+          'name',
+          'currency',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.id == businessId
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.name is string
+        && data.name.size() >= 2
+        && data.name.size() <= 120
+        && data.currency in ['NGN', 'USD', 'GHS', 'KES', 'GBP']
+        && data.status in ['active', 'archived']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSupplier(data, businessId, supplierId) {
+      return data.keys().hasAll([
+          'id',
+          'businessId',
+          'ownerId',
+          'name',
+          'phone',
+          'email',
+          'address',
+          'productsSupplied',
+          'totalPurchases',
+          'outstandingBalance',
+          'payments',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'businessId',
+          'ownerId',
+          'name',
+          'phone',
+          'email',
+          'address',
+          'productsSupplied',
+          'totalPurchases',
+          'outstandingBalance',
+          'payments',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.id == supplierId
+        && isValidId(data.businessId)
+        && data.businessId == businessId
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.name is string
+        && data.name.size() >= 2
+        && data.name.size() <= 120
+        && data.phone is string
+        && data.phone.size() <= 40
+        && data.email is string
+        && data.email.size() <= 254
+        && data.address is string
+        && data.address.size() <= 240
+        && data.productsSupplied is string
+        && data.productsSupplied.size() <= 240
+        && data.totalPurchases is number
+        && data.totalPurchases >= 0
+        && data.outstandingBalance is number
+        && data.outstandingBalance >= 0
+        && data.payments is list
+        && data.payments.size() <= 50
+        && (data.payments.size() == 0 || data.payments[0] is map)
+        && data.status in ['active', 'archived']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // =========================================================================
+    // Collection 1: /admins/{adminId} (Read-only lookup; client writes forbidden)
+    // =========================================================================
+    match /admins/{adminId} {
+      allow get: if isSignedIn() && isValidId(adminId) && (request.auth.uid == adminId || isAdmin());
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+
+    // =========================================================================
+    // Collection 2: /users/{userId} (Non-PII workspace profile)
+    // =========================================================================
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+
+      // Atomicity Guarantee (Pillar 7): Profile creation must atomically create
+      // both private PII record and primary business workspace in the same batch.
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserPublicProfile(incoming(), userId)
+        && incoming().status == 'active'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && existsAfter(/databases/$(database)/documents/users/$(userId)/private/info)
+        && existsAfter(/databases/$(database)/documents/businesses/$(incoming().defaultBusinessId));
+
+      // Action-Based Updates + Terminal State Lock + Immortal Fields
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidUserPublicProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            isOwner(userId)
+            && existing().status != 'archived'
+            && (
+              // Action: Update display name or active workspace
+              (
+                incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'defaultBusinessId', 'updatedAt'])
+                && exists(/databases/$(database)/documents/businesses/$(incoming().defaultBusinessId))
+              )
+              ||
+              // Action: Archive profile
+              (
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+                && incoming().status == 'archived'
+              )
+            )
+          )
+        );
+
+      allow delete: if false;
+
+      // =======================================================================
+      // Collection 3: /users/{userId}/private/{docId} (Strict PII Isolation)
+      // =======================================================================
+      match /private/{docId} {
+        allow get: if isSignedIn()
+          && isValidId(userId)
+          && isValidId(docId)
+          && (isOwner(userId) || isAdmin());
+        allow list: if isSignedIn() && resource.data.uid == request.auth.uid;
+
+        allow create: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(docId)
+          && docId == 'info'
+          && isOwner(userId)
+          && isValidUserPrivateInfo(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && existsAfter(/databases/$(database)/documents/users/$(userId));
+
+        allow update: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(docId)
+          && isValidUserPrivateInfo(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            isAdmin()
+            || (
+              isOwner(userId)
+              && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'phone', 'updatedAt'])
+            )
+          );
+
+        allow delete: if false;
+      }
+    }
+
+    // =========================================================================
+    // Collection 4: /businesses/{businessId} (Master Tenant Workspace)
+    // =========================================================================
+    match /businesses/{businessId} {
+      allow get: if isSignedIn()
+        && isValidId(businessId)
+        && (resource == null || existing().ownerId == request.auth.uid || isAdmin());
+
+      // Pillar 8: Rule-enforced list query (zero get()/exists() calls)
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(businessId)
+        && isValidBusiness(incoming(), businessId)
+        && incoming().status == 'active'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(businessId)
+        && isValidBusiness(incoming(), businessId)
+        && incoming().id == existing().id
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            existing().ownerId == request.auth.uid
+            && existing().status != 'archived'
+            && (
+              // Action: Update business profile settings
+              incoming().diff(existing()).affectedKeys().hasOnly(['name', 'currency', 'updatedAt'])
+              ||
+              // Action: Archive workspace
+              (
+                incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+                && incoming().status == 'archived'
+              )
+            )
+          )
+        );
+
+      allow delete: if false;
+
+      // =======================================================================
+      // Collection 5: /businesses/{businessId}/suppliers/{supplierId}
+      // =======================================================================
+      match /suppliers/{supplierId} {
+        allow get: if isSignedIn()
+          && isValidId(businessId)
+          && isValidId(supplierId)
+          && (ownsBusiness(businessId) || isAdmin());
+
+        // Pillar 8: Query Enforcer (no get()/exists() inside allow list)
+        allow list: if isSignedIn()
+          && resource.data.ownerId == request.auth.uid
+          && resource.data.businessId == businessId;
+
+        // Pillar 1 (Master Gate) + Pillar 2 + Pillar 3 + Temporal Integrity
+        allow create: if isVerifiedUser()
+          && isValidId(businessId)
+          && isValidId(supplierId)
+          && isValidSupplier(incoming(), businessId, supplierId)
+          && incoming().status == 'active'
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && ownsBusiness(businessId);
+
+        // Action-Based Update + Master Gate + Terminal State Lock
+        allow update: if isVerifiedUser()
+          && isValidId(businessId)
+          && isValidId(supplierId)
+          && isValidSupplier(incoming(), businessId, supplierId)
+          && incoming().id == existing().id
+          && incoming().businessId == existing().businessId
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            isAdmin()
+            || (
+              ownsBusiness(businessId)
+              && existing().status != 'archived'
+              && (
+                // Action: Edit supplier details & balance
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'name',
+                  'phone',
+                  'email',
+                  'address',
+                  'productsSupplied',
+                  'outstandingBalance',
+                  'updatedAt'
+                ])
+                ||
+                // Action: Record supplier payment settlement
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'outstandingBalance',
+                  'payments',
+                  'updatedAt'
+                ])
+                ||
+                // Action: Log linked purchase total
+                incoming().diff(existing()).affectedKeys().hasOnly([
+                  'totalPurchases',
+                  'outstandingBalance',
+                  'updatedAt'
+                ])
+                ||
+                // Action: Archive supplier
+                (
+                  incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+                  && incoming().status == 'archived'
+                )
+              )
+            )
+          );
+
+        allow delete: if isVerifiedUser()
+          && isValidId(businessId)
+          && isValidId(supplierId)
+          && (ownsBusiness(businessId) || isAdmin());
+      }
+    }
+  }
+}

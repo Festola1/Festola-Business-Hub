@@ -1,3 +1,4 @@
+import firebaseRulesPlugin from '@firebase/eslint-plugin-security-rules';
 import js from '@eslint/js';
 import esbuild from 'esbuild';
 import * as espree from 'espree';
@@ -60,6 +61,7 @@ const browserGlobals = {
 
 const nodeGlobals = {
   process: 'readonly',
+  global: 'readonly',
   console: 'readonly',
   Buffer: 'readonly',
   fetch: 'readonly',
@@ -84,8 +86,10 @@ export default [
     ],
   },
   js.configs.recommended,
+  firebaseRulesPlugin.configs['flat/recommended'],
   {
     files: ['src/**/*.{ts,tsx}'],
+    ignores: ['src/db/**'],
     languageOptions: {
       parser: ts7CompatibleParser,
       ecmaVersion: 'latest',
@@ -97,15 +101,23 @@ export default [
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
-      // Enforce strict client/server boundary: browser code must never import server code
+      // Enforce strict client/server boundary: browser code must never import server or database modules
       'no-restricted-imports': [
         'error',
         {
           patterns: [
             {
-              group: ['../server/*', '../../server/*', '@/server/*', 'server/*'],
+              group: [
+                '../server/*',
+                '../../server/*',
+                '@/server/*',
+                'server/*',
+                '../db/*',
+                '../../db/*',
+                '@/db/*',
+              ],
               message:
-                'Browser code in src/ must never import server modules or server-only secrets.',
+                'Browser code in src/ must never import server modules, database connections, or server-only secrets.',
             },
           ],
         },
@@ -122,7 +134,7 @@ export default [
     },
   },
   {
-    files: ['server/**/*.ts', 'server.ts', 'vite.config.ts', 'vitest.config.ts'],
+    files: ['server/**/*.ts', 'src/db/**/*.ts', 'server.ts', 'vite.config.ts', 'vitest.config.ts'],
     languageOptions: {
       parser: ts7CompatibleParser,
       ecmaVersion: 'latest',

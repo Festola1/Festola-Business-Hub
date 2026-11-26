@@ -122,6 +122,26 @@ export interface ReceiptRecord {
   issuedAt: string;
 }
 
+export interface SaleReturnItemRecord {
+  id: string;
+  saleItemId: string;
+  productId: string;
+  quantityReturned: string;
+  disposition: 'restock' | 'damaged';
+  unitPriceSnapshot: string;
+  taxReversed: string;
+  lineReversedTotal: string;
+}
+
+export interface SaleRefundRecord {
+  id: string;
+  method: 'cash' | 'transfer' | 'pos_card';
+  amount: string;
+  referenceNote: string | null;
+  processedBy: string;
+  createdAt: string;
+}
+
 export interface SaleReturnRecord {
   id: string;
   returnType: 'full_void' | 'return';
@@ -131,6 +151,8 @@ export interface SaleReturnRecord {
   refundAmount: string;
   processedBy: string;
   createdAt: string;
+  items?: SaleReturnItemRecord[];
+  refund?: SaleRefundRecord | null;
 }
 
 export interface SaleRecord {
@@ -190,6 +212,10 @@ export interface DebtPaymentRecord {
   receipt: ReceiptRecord | null;
 }
 
+export interface BusinessDebtPaymentItem extends DebtPaymentRecord {
+  customerName: string;
+}
+
 export interface ExpenseCategory {
   id: string;
   name: string;
@@ -237,6 +263,16 @@ export interface TopProductRow {
   unitsSold: string;
   revenue: string;
   cogs?: string;
+}
+
+export interface SalesByCategoryRow {
+  categoryId: string | null;
+  categoryName: string;
+  unitsSold: string;
+  revenue: string;
+  cogs: string;
+  grossProfit: string;
+  sharePercent: number;
 }
 
 export interface InventoryValuationReport {
@@ -313,6 +349,28 @@ export interface SubscriptionInvoiceItem {
   checkoutUrl: string | null;
   paidAt: string | null;
   createdAt: string;
+}
+
+export interface CurrentSubscriptionSummary {
+  subscription: {
+    id: string;
+    businessId: string;
+    planId: string;
+    planCode: string;
+    displayName: string;
+    status: 'trialing' | 'active' | 'grace_period' | 'read_only' | 'suspended';
+    trialEndsAt: string | null;
+    currentPeriodStart: string;
+    currentPeriodEnd: string;
+    graceEndsAt: string | null;
+    maxStaff: number;
+    maxProducts: number;
+    maxOfflineDevices: number;
+  } | null;
+  status: 'trialing' | 'active' | 'grace_period' | 'read_only' | 'suspended';
+  staffCount: number;
+  productCount: number;
+  activeDeviceCount: number;
 }
 
 // ============================================================================
@@ -489,6 +547,10 @@ export function fetchSales(
   opts: {
     status?: SaleStatus;
     paymentStatus?: SalePaymentStatus;
+    paymentMethod?: TenderMethod;
+    customerId?: string;
+    from?: string;
+    to?: string;
     search?: string;
     limit?: number;
     offset?: number;
@@ -499,6 +561,10 @@ export function fetchSales(
   q.set('offset', String(opts.offset ?? 0));
   if (opts.status) q.set('status', opts.status);
   if (opts.paymentStatus) q.set('paymentStatus', opts.paymentStatus);
+  if (opts.paymentMethod) q.set('paymentMethod', opts.paymentMethod);
+  if (opts.customerId) q.set('customerId', opts.customerId);
+  if (opts.from) q.set('from', opts.from);
+  if (opts.to) q.set('to', opts.to);
   if (opts.search?.trim()) q.set('search', opts.search.trim());
 
   return apiRequest<{ sales: SaleRecord[] }>(`/sales?${q.toString()}`, {
@@ -547,12 +613,13 @@ export function voidSale(
     refundMethod: 'cash' | 'transfer' | 'pos_card';
     refundReferenceNote?: string | null;
   },
+  idempotencyKey?: string,
 ) {
   return apiRequest<{ sale: SaleRecord; saleReturn: SaleReturnRecord }>(`/sales/${saleId}/void`, {
     method: 'POST',
     accessToken,
     businessId,
-    idempotencyKey: generateUuid(),
+    idempotencyKey: idempotencyKey ?? generateUuid(),
     body,
   });
 }
@@ -567,6 +634,7 @@ export function returnSaleItems(
     refundReferenceNote?: string | null;
     items: Array<{ saleItemId: string; quantity: string; disposition: 'restock' | 'damaged' }>;
   },
+  idempotencyKey?: string,
 ) {
   return apiRequest<{ sale: SaleRecord; saleReturn: SaleReturnRecord }>(
     `/sales/${saleId}/returns`,
@@ -574,7 +642,7 @@ export function returnSaleItems(
       method: 'POST',
       accessToken,
       businessId,
-      idempotencyKey: generateUuid(),
+      idempotencyKey: idempotencyKey ?? generateUuid(),
       body,
     },
   );
@@ -596,6 +664,30 @@ export function fetchCustomers(
   if (opts.hasDebtOnly) q.set('hasDebtOnly', 'true');
 
   return apiRequest<{ customers: CustomerItem[] }>(`/customers?${q.toString()}`, {
+    accessToken,
+    businessId,
+  });
+}
+
+export function fetchBusinessDebtPayments(
+  accessToken: string,
+  businessId: string,
+  opts: {
+    status?: 'posted' | 'reversed';
+    from?: string;
+    to?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+) {
+  const q = new URLSearchParams();
+  q.set('limit', String(opts.limit ?? 10));
+  q.set('offset', String(opts.offset ?? 0));
+  if (opts.status) q.set('status', opts.status);
+  if (opts.from) q.set('from', opts.from);
+  if (opts.to) q.set('to', opts.to);
+
+  return apiRequest<{ debtPayments: BusinessDebtPaymentItem[] }>(`/debt-payments?${q.toString()}`, {
     accessToken,
     businessId,
   });
@@ -778,6 +870,22 @@ export function fetchSalesByDay(
   });
 }
 
+export function fetchSalesByCategory(
+  accessToken: string,
+  businessId: string,
+  range?: { from?: string; to?: string; limit?: number },
+) {
+  const q = new URLSearchParams();
+  if (range?.from) q.set('from', range.from);
+  if (range?.to) q.set('to', range.to);
+  if (range?.limit) q.set('limit', String(range.limit));
+  const qs = q.toString() ? `?${q.toString()}` : '';
+  return apiRequest<{ categories: SalesByCategoryRow[] }>(`/reports/sales-by-category${qs}`, {
+    accessToken,
+    businessId,
+  });
+}
+
 export function fetchTopProducts(
   accessToken: string,
   businessId: string,
@@ -923,6 +1031,13 @@ export function resolveSyncConflict(
 export function fetchSubscriptionPlans(accessToken: string) {
   return apiRequest<{ plans: SubscriptionPlanCatalogItem[] }>('/plans', {
     accessToken,
+  });
+}
+
+export function fetchCurrentSubscription(accessToken: string, businessId: string) {
+  return apiRequest<CurrentSubscriptionSummary>('/subscriptions/current', {
+    accessToken,
+    businessId,
   });
 }
 

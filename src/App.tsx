@@ -4,14 +4,15 @@
  */
 
 import { lazy, Suspense, useEffect, type ReactNode } from 'react';
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router';
+import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from 'react-router';
 import { AppShell } from './components/layout/AppShell';
 import { OfflineIndicator } from './components/pwa/OfflineIndicator';
 import { PWAUpdateBanner } from './components/pwa/PWAUpdateBanner';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
-import { PageSkeleton } from './components/ui/Feedback';
+import { PageSkeleton, PermissionDeniedState } from './components/ui/Feedback';
 import { ToastProvider } from './components/ui/ToastProvider';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { FirebaseProvider } from './contexts/FirebaseContext';
 import { canRoleAccess, type ClientPermission } from './lib/permissions';
 import LandingPage from './pages/LandingPage';
 
@@ -114,7 +115,21 @@ function RequireClientPermission({
 }) {
   const { activeMembership } = useAuth();
   if (!activeMembership || !canRoleAccess(activeMembership.role, permission)) {
-    return <Navigate to="/app/dashboard" replace />;
+    return (
+      <PermissionDeniedState
+        title="You do not have permission to open this screen"
+        description="This module is restricted based on your workspace role. Contact your business owner if you need elevated permissions."
+        requiredRoleHint="Owner or authorized Manager role"
+        action={
+          <Link
+            to="/app/dashboard"
+            className="inline-flex h-10 items-center justify-center rounded-xl bg-[#991B1B] px-4 text-xs font-semibold text-white transition-colors hover:bg-[#7F1D1D]"
+          >
+            Return to Dashboard
+          </Link>
+        }
+      />
+    );
   }
   return <>{children}</>;
 }
@@ -286,11 +301,13 @@ export default function App() {
   return (
     <ErrorBoundary>
       <BrowserRouter basename={routerBasename}>
-        <AuthProvider>
-          <ToastProvider>
-            <AppRoutes />
-          </ToastProvider>
-        </AuthProvider>
+        <FirebaseProvider>
+          <AuthProvider>
+            <ToastProvider>
+              <AppRoutes />
+            </ToastProvider>
+          </AuthProvider>
+        </FirebaseProvider>
       </BrowserRouter>
     </ErrorBoundary>
   );

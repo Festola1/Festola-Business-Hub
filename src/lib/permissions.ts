@@ -8,6 +8,8 @@ export type ClientPermission =
   | 'products.view_selling'
   | 'products.view_cost'
   | 'products.manage'
+  | 'sales.apply_discount'
+  | 'sales.authorize_credit_override'
   | 'sales.void_or_return'
   | 'inventory.receive_and_adjust'
   | 'expenses.manage'
@@ -31,6 +33,8 @@ const CLIENT_ROLE_PERMISSIONS: Record<ClientBusinessRole, ReadonlySet<ClientPerm
     'products.view_selling',
     'products.view_cost',
     'products.manage',
+    'sales.apply_discount',
+    'sales.authorize_credit_override',
     'sales.void_or_return',
     'inventory.receive_and_adjust',
     'expenses.manage',
@@ -53,6 +57,8 @@ const CLIENT_ROLE_PERMISSIONS: Record<ClientBusinessRole, ReadonlySet<ClientPerm
     'products.view_selling',
     'products.view_cost',
     'products.manage',
+    'sales.apply_discount',
+    'sales.authorize_credit_override',
     'sales.void_or_return',
     'inventory.receive_and_adjust',
     'expenses.manage',
@@ -106,6 +112,7 @@ export interface NavItemDefinition {
   shortLabel: string;
   icon: NavIconKey;
   section?: 'primary' | 'system';
+  release?: 1 | 2;
   requiredPermission?: ClientPermission;
   mobilePrimary?: boolean;
   stageBadge?: string;
@@ -160,6 +167,7 @@ export const APP_NAV_ITEMS: NavItemDefinition[] = [
     shortLabel: 'Purchases',
     icon: 'purchases',
     section: 'primary',
+    release: 2,
     requiredPermission: 'inventory.receive_and_adjust',
   },
   {
@@ -168,6 +176,7 @@ export const APP_NAV_ITEMS: NavItemDefinition[] = [
     shortLabel: 'Customers',
     icon: 'customers',
     section: 'primary',
+    release: 1,
     requiredPermission: 'customers.manage',
   },
   {
@@ -176,6 +185,7 @@ export const APP_NAV_ITEMS: NavItemDefinition[] = [
     shortLabel: 'Suppliers',
     icon: 'suppliers',
     section: 'primary',
+    release: 2,
     requiredPermission: 'inventory.receive_and_adjust',
   },
   {
@@ -260,8 +270,19 @@ export const APP_NAV_ITEMS: NavItemDefinition[] = [
   },
 ];
 
-export function getVisibleNavItems(role: ClientBusinessRole): NavItemDefinition[] {
-  return APP_NAV_ITEMS.filter(
-    (item) => !item.requiredPermission || canRoleAccess(role, item.requiredPermission),
-  );
+export function isRelease2NavEnabled(): boolean {
+  return import.meta.env.VITE_ENABLE_RELEASE_2 === 'true';
+}
+
+export function getVisibleNavItems(
+  role: ClientBusinessRole,
+  options?: { includeRelease2?: boolean },
+): NavItemDefinition[] {
+  const allowRelease2 = options?.includeRelease2 ?? isRelease2NavEnabled();
+  return APP_NAV_ITEMS.filter((item) => {
+    if (item.release === 2 && !allowRelease2) {
+      return false;
+    }
+    return !item.requiredPermission || canRoleAccess(role, item.requiredPermission);
+  });
 }

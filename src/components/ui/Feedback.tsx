@@ -173,7 +173,7 @@ export function ErrorState({
   onRetry?: () => void;
 }) {
   return (
-    <div role="alert" className="rounded-lg border border-[#DC2626] bg-white p-6">
+    <div role="alert" className="rounded-xl border border-[#DC2626] bg-white p-6">
       <div className="flex items-start gap-3">
         <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-[#DC2626]" aria-hidden="true" />
         <div className="min-w-0 flex-1">
@@ -190,5 +190,82 @@ export function ErrorState({
         </div>
       </div>
     </div>
+  );
+}
+
+export function PermissionDeniedState({
+  title = 'Access restricted for your role',
+  description = 'Your current workspace role does not include permission to view or modify this module. Backend APIs also enforce this boundary independently.',
+  requiredRoleHint,
+  action,
+}: {
+  title?: string;
+  description?: string;
+  requiredRoleHint?: string;
+  action?: ReactNode;
+}) {
+  return (
+    <section
+      role="alert"
+      aria-label={title}
+      className="rounded-2xl border border-[#E4E4E7] bg-white p-6 sm:p-8"
+    >
+      <div className="flex items-start gap-3.5">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#FEF2F2] text-[#DC2626]">
+          <AlertTriangle className="h-5 w-5" aria-hidden="true" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold text-[#DC2626]">403 · Permission denied</p>
+          <h2 className="mt-1 text-lg font-bold tracking-tight text-[#18181B]">{title}</h2>
+          <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-[#52525B]">{description}</p>
+          {requiredRoleHint && (
+            <p className="mt-2 text-xs text-[#52525B]">
+              Required access: <strong className="text-[#18181B]">{requiredRoleHint}</strong>
+            </p>
+          )}
+          {action && <div className="mt-5">{action}</div>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export function StatCard({
+  label,
+  value,
+  caption,
+  icon,
+  tone = 'default',
+  className = '',
+}: {
+  label: string;
+  value: ReactNode;
+  caption?: ReactNode;
+  icon?: ReactNode;
+  tone?: 'default' | 'warning' | 'danger' | 'success';
+  className?: string;
+}) {
+  const surfaceClass =
+    tone === 'warning'
+      ? 'border-[#FDE68A] bg-[#FFFDF5]'
+      : tone === 'danger'
+        ? 'border-[#FECACA] bg-[#FFF8F8]'
+        : tone === 'success'
+          ? 'border-[#BBF7D0] bg-[#F7FEF9]'
+          : 'border-[#E4E4E7] bg-white';
+
+  return (
+    <section
+      className={`flex flex-col justify-between rounded-2xl border p-4 transition-colors sm:p-5 ${surfaceClass} ${className}`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <p className="truncate text-xs font-medium text-[#52525B]">{label}</p>
+        {icon && <span className="shrink-0 text-[#18181B]">{icon}</span>}
+      </div>
+      <div className="mt-3 font-mono-tabular text-xl font-bold tracking-tight text-[#18181B] sm:text-[22px]">
+        {value}
+      </div>
+      {caption && <div className="mt-1.5 text-xs text-[#52525B]">{caption}</div>}
+    </section>
   );
 }

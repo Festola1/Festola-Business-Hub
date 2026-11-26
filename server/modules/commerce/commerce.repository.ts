@@ -3,6 +3,7 @@ import type {
   ActiveDeviceLookup,
   AuditEventInput,
   AuditLogRecord,
+  BusinessDebtPaymentListItem,
   BusinessLocationRecord,
   BusinessTaxAndStockConfig,
   CustomerDebtPaymentRecord,
@@ -23,6 +24,7 @@ import type {
   SubscriptionPlanCatalogItem,
   SubscriptionUsageSummary,
   SyncConflictRecord,
+  TenderMethod,
 } from './commerce.types.ts';
 
 /**
@@ -119,6 +121,7 @@ export interface CommerceTx {
   findSaleByClientUuid(businessId: string, clientSaleUuid: string): Promise<SaleRecord | null>;
   insertSale(record: SaleRecord): Promise<SaleRecord>;
   getSaleById(businessId: string, saleId: string): Promise<SaleRecord | null>;
+  lockSaleById(businessId: string, saleId: string): Promise<SaleRecord | null>;
   listSales(
     businessId: string,
     opts: {
@@ -126,6 +129,7 @@ export interface CommerceTx {
       offset: number;
       status?: SaleRecord['status'];
       paymentStatus?: SaleRecord['paymentStatus'];
+      paymentMethod?: TenderMethod;
       customerId?: string;
       cashierUserId?: string;
       search?: string;
@@ -162,6 +166,7 @@ export interface CommerceTx {
     opts: { limit: number; offset: number; search?: string; hasDebtOnly?: boolean },
   ): Promise<PaginatedResult<CustomerRecord>>;
   getCustomerById(businessId: string, customerId: string): Promise<CustomerRecord | null>;
+  lockCustomerById(businessId: string, customerId: string): Promise<CustomerRecord | null>;
   insertCustomer(record: CustomerRecord): Promise<CustomerRecord>;
   updateCustomer(
     businessId: string,
@@ -190,6 +195,16 @@ export interface CommerceTx {
     businessId: string,
     customerId: string,
   ): Promise<CustomerDebtPaymentRecord[]>;
+  listBusinessDebtPayments(
+    businessId: string,
+    opts: {
+      limit: number;
+      offset: number;
+      status?: 'posted' | 'reversed';
+      from?: string;
+      to?: string;
+    },
+  ): Promise<PaginatedResult<BusinessDebtPaymentListItem>>;
   markDebtPaymentReversed(
     businessId: string,
     paymentId: string,
@@ -325,7 +340,9 @@ interface InMemoryStateSnapshot {
  */
 export class InMemoryCommerceRepository implements CommerceRepository {
   private state: InMemoryStateSnapshot;
+  private txChain: Promise<unknown> = Promise.resolve();
   public failAfterNextSaleInsert = false;
+  public failOnNextReceiptInsert = false;
 
   constructor() {
     this.state = {
@@ -407,6 +424,10 @@ export class InMemoryCommerceRepository implements CommerceRepository {
 
   getAllMovements(businessId: string): StockMovementRecord[] {
     return this.state.movements.filter((m) => m.businessId === businessId);
+  }
+
+  getAllReceipts(businessId: string): ReceiptRecord[] {
+    return [...this.state.receipts.values()].filter((r) => r.businessId === businessId);
   }
 
   private createTx(draft: InMemoryStateSnapshot): CommerceTx {
@@ -616,15 +637,27 @@ export class InMemoryCommerceRepository implements CommerceRepository {
         return sale && sale.businessId === businessId ? structuredClone(sale) : null;
       },
 
+      async lockSaleById(businessId, saleId) {
+        const sale = draft.sales.get(saleId);
+        return sale && sale.businessId === businessId ? structuredClone(sale) : null;
+      },
+
       async listSales(businessId, opts) {
         let rows = [...draft.sales.values()].filter((s) => s.businessId === businessId);
         if (opts.status) rows = rows.filter((s) => s.status === opts.status);
         if (opts.paymentStatus) rows = rows.filter((s) => s.paymentStatus === opts.paymentStatus);
+        if (opts.paymentMethod) {
+          rows = rows.filter((s) => s.payments.some((p) => p.method === opts.paymentMethod));
+        }
         if (opts.customerId) rows = rows.filter((s) => s.customerId === opts.customerId);
         if (opts.cashierUserId) rows = rows.filter((s) => s.soldBy === opts.cashierUserId);
         if (opts.search) {
           const q = opts.search.toLowerCase();
-          rows = rows.filter((s) => s.saleNumber.toLowerCase().includes(q));
+          rows = rows.filter(
+            (s) =>
+              s.saleNumber.toLowerCase().includes(q) ||
+              (s.notes ?? '').toLowerCase().includes(q),
+          );
         }
         if (opts.from) rows = rows.filter((s) => s.soldAt >= opts.from!);
         if (opts.to) rows = rows.filter((s) => s.soldAt <= opts.to!);
@@ -662,6 +695,10 @@ export class InMemoryCommerceRepository implements CommerceRepository {
       },
 
       async insertReceipt(record) {
+        if (repo.failOnNextReceiptInsert) {
+          repo.failOnNextReceiptInsert = false;
+          throw new Error('SIMULATED_RECEIPT_WRITE_FAILURE');
+        }
         draft.receipts.set(record.id, structuredClone(record));
         return structuredClone(record);
       },
@@ -689,6 +726,11 @@ export class InMemoryCommerceRepository implements CommerceRepository {
       },
 
       async getCustomerById(businessId, customerId) {
+        const c = draft.customers.get(customerId);
+        return c && c.businessId === businessId ? structuredClone(c) : null;
+      },
+
+      async lockCustomerById(businessId, customerId) {
         const c = draft.customers.get(customerId);
         return c && c.businessId === businessId ? structuredClone(c) : null;
       },
@@ -734,6 +776,24 @@ export class InMemoryCommerceRepository implements CommerceRepository {
           .filter((p) => p.businessId === businessId && p.customerId === customerId)
           .sort((a, b) => b.paidAt.localeCompare(a.paidAt))
           .map((p) => structuredClone(p));
+      },
+
+      async listBusinessDebtPayments(businessId, opts) {
+        let rows = [...draft.debtPayments.values()].filter((p) => p.businessId === businessId);
+        if (opts.status) rows = rows.filter((p) => p.status === opts.status);
+        if (opts.from) rows = rows.filter((p) => p.paidAt >= opts.from!);
+        if (opts.to) rows = rows.filter((p) => p.paidAt <= opts.to!);
+        rows.sort((a, b) => b.paidAt.localeCompare(a.paidAt));
+        return {
+          total: rows.length,
+          items: rows.slice(opts.offset, opts.offset + opts.limit).map((p) => {
+            const customer = draft.customers.get(p.customerId);
+            return {
+              ...structuredClone(p),
+              customerName: customer?.fullName ?? 'Customer',
+            };
+          }),
+        };
       },
 
       async markDebtPaymentReversed(businessId, paymentId, patch) {
@@ -1001,21 +1061,27 @@ export class InMemoryCommerceRepository implements CommerceRepository {
     };
   }
 
+  private enqueueSerializedTx<T>(fn: (tx: CommerceTx) => Promise<T>): Promise<T> {
+    const run = async (): Promise<T> => {
+      const draft = structuredClone(this.state);
+      const result = await fn(this.createTx(draft));
+      this.state = draft;
+      return result;
+    };
+    const next = this.txChain.catch(() => undefined).then(run);
+    this.txChain = next;
+    return next;
+  }
+
   async runTenantTransaction<T>(
     _businessId: string,
     _userId: string,
     fn: (tx: CommerceTx) => Promise<T>,
   ): Promise<T> {
-    const draft = structuredClone(this.state);
-    const result = await fn(this.createTx(draft));
-    this.state = draft;
-    return result;
+    return this.enqueueSerializedTx(fn);
   }
 
   async runSystemTransaction<T>(fn: (tx: CommerceTx) => Promise<T>): Promise<T> {
-    const draft = structuredClone(this.state);
-    const result = await fn(this.createTx(draft));
-    this.state = draft;
-    return result;
+    return this.enqueueSerializedTx(fn);
   }
 }

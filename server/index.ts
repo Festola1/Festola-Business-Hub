@@ -1,6 +1,7 @@
 import express, { type Express } from 'express';
 import { loadServerEnv, type ServerEnv } from './config/env.ts';
 import { createDbPool } from './lib/db.ts';
+import { createFirebaseAuthVerifier } from './lib/firebase-admin.ts';
 import { createSupabaseAuthVerifier, type AuthTokenVerifier } from './lib/supabase-admin.ts';
 import {
   InMemoryIdempotencyRecordStore,
@@ -76,8 +77,8 @@ export function createApiApp(
 ): Express {
   const app = express();
 
-  const authVerifier =
-    deps.authVerifier !== undefined ? deps.authVerifier : createSupabaseAuthVerifier(env);
+  const authVerifier: AuthTokenVerifier | null =
+    deps.authVerifier !== undefined ? deps.authVerifier : createDefaultAuthVerifier(env);
 
   const storageSigner =
     deps.storageSigner !== undefined ? deps.storageSigner : createSupabaseStorageSigner(env);
@@ -223,4 +224,26 @@ export function createApiApp(
   app.use('/api', errorHandler);
 
   return app;
+}
+
+function createDefaultAuthVerifier(env: ServerEnv): AuthTokenVerifier | null {
+  const supabaseVerifier = createSupabaseAuthVerifier(env);
+  const firebaseVerifier = createFirebaseAuthVerifier();
+
+  if (supabaseVerifier && firebaseVerifier) {
+    return {
+      async verifyAccessToken(accessToken: string) {
+        const supabaseUser = await supabaseVerifier.verifyAccessToken(accessToken);
+        if (supabaseUser) {
+          return supabaseUser;
+        }
+        return firebaseVerifier.verifyAccessToken(accessToken);
+      },
+      async signOutUser(userId: string) {
+        await supabaseVerifier.signOutUser?.(userId);
+      },
+    };
+  }
+
+  return supabaseVerifier ?? firebaseVerifier;
 }

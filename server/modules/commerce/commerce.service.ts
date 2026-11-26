@@ -52,6 +52,7 @@ import type {
   SaleRefundRecord,
   SaleReturnItemRecord,
   SaleReturnRecord,
+  SalesByCategoryRow,
   StockMovementQuerySchema,
   SubscriptionCheckoutSchema,
   SubscriptionVerifySchema,
@@ -718,6 +719,14 @@ export class CommerceService {
       const discountKobo = parseMoneyToKobo(line.discountAmount, 'discountAmount');
       const grossLineKobo = multiplyQtyByKobo(qtyMilli, unitPriceKobo);
 
+      if (discountKobo > 0n && !hasPermission(tenant.role, 'sales.apply_discount')) {
+        throw new ApiError(
+          403,
+          'PERMISSION_DENIED',
+          'Applying line discounts requires Manager or Owner approval.',
+        );
+      }
+
       if (discountKobo > grossLineKobo) {
         throw new ApiError(
           400,
@@ -819,7 +828,7 @@ export class CommerceService {
 
     let customer: CustomerRecord | null = null;
     if (input.customerId) {
-      customer = await tx.getCustomerById(tenant.businessId, input.customerId);
+      customer = await tx.lockCustomerById(tenant.businessId, input.customerId);
       if (!customer || !customer.isActive) {
         throw new ApiError(404, 'NOT_FOUND', 'Customer not found.');
       }
@@ -835,7 +844,15 @@ export class CommerceService {
       }
       const nextBalanceKobo =
         parseMoneyToKobo(customer.outstandingBalance, 'outstandingBalance') + creditKobo;
-      if (customer.creditLimit !== null) {
+      if (customer.creditLimit === null) {
+        if (!hasPermission(tenant.role, 'sales.authorize_credit_override')) {
+          throw new ApiError(
+            403,
+            'PERMISSION_DENIED',
+            'Credit sales to customers without an approved credit limit require Manager or Owner authorization.',
+          );
+        }
+      } else {
         const limitKobo = parseMoneyToKobo(customer.creditLimit, 'creditLimit');
         if (nextBalanceKobo > limitKobo) {
           throw new ApiError(
@@ -909,6 +926,9 @@ export class CommerceService {
         currencyCode: cfg.currencyCode,
         receiptNumber: saleNumber,
         customerName: customer?.fullName ?? null,
+        taxEnabled: cfg.taxEnabled,
+        taxMode: cfg.taxMode,
+        taxRate: formatTaxRatePercent(taxRateScaled),
         items: saleItems.map((i) => ({
           name: i.productNameSnapshot,
           unit: i.unitSnapshot,
@@ -922,7 +942,15 @@ export class CommerceService {
         discountAmount: formatKobo(totalDiscountKobo),
         taxAmount: formatKobo(totalTaxKobo),
         totalAmount: formatKobo(grandTotalKobo),
-        payments: salePayments.map((p) => ({ method: p.method, amount: p.amount })),
+        amountPaid: formatKobo(paidNowKobo),
+        creditAmount: formatKobo(creditKobo),
+        creditRemaining: formatKobo(creditKobo),
+        payments: salePayments.map((p) => ({
+          method: p.method,
+          amount: p.amount,
+          referenceNote: p.referenceNote,
+        })),
+        notes: input.notes ?? null,
         receiptFooter: cfg.receiptFooter,
         issuedAt: now,
       },
@@ -961,8 +989,8 @@ export class CommerceService {
       returns: [],
     };
 
-    await tx.insertReceipt(receipt);
     const persistedSale = await tx.insertSale(saleRecord);
+    await tx.insertReceipt(receipt);
 
     await tx.recordAudit({
       businessId: tenant.businessId,
@@ -997,6 +1025,7 @@ export class CommerceService {
         offset: query.offset,
         status: query.status,
         paymentStatus: query.paymentStatus,
+        paymentMethod: query.paymentMethod,
         customerId: query.customerId,
         cashierUserId: query.cashierUserId,
         search: query.search,
@@ -1036,7 +1065,7 @@ export class CommerceService {
     input: z.infer<typeof VoidSaleSchema>,
   ) {
     return this.repo.runTenantTransaction(tenant.businessId, tenant.userId, async (tx) => {
-      const sale = await tx.getSaleById(tenant.businessId, saleId);
+      const sale = await tx.lockSaleById(tenant.businessId, saleId);
       if (!sale) {
         throw new ApiError(404, 'NOT_FOUND', 'Sale not found.');
       }
@@ -1070,7 +1099,7 @@ export class CommerceService {
     input: z.infer<typeof ReturnSaleSchema>,
   ) {
     return this.repo.runTenantTransaction(tenant.businessId, tenant.userId, async (tx) => {
-      const sale = await tx.getSaleById(tenant.businessId, saleId);
+      const sale = await tx.lockSaleById(tenant.businessId, saleId);
       if (!sale) {
         throw new ApiError(404, 'NOT_FOUND', 'Sale not found.');
       }
@@ -1177,7 +1206,7 @@ export class CommerceService {
     const nextCreditRemainingKobo = creditRemainingKobo - debtReducedKobo;
 
     if (debtReducedKobo > 0n && sale.customerId) {
-      const customer = await tx.getCustomerById(tenant.businessId, sale.customerId);
+      const customer = await tx.lockCustomerById(tenant.businessId, sale.customerId);
       if (customer) {
         const curBal = parseMoneyToKobo(customer.outstandingBalance);
         const nextBal = curBal > debtReducedKobo ? curBal - debtReducedKobo : 0n;
@@ -1317,6 +1346,21 @@ export class CommerceService {
   ) {
     return this.repo.runTenantTransaction(tenant.businessId, tenant.userId, (tx) =>
       tx.listCustomers(tenant.businessId, opts),
+    );
+  }
+
+  async listBusinessDebtPayments(
+    tenant: ActiveTenantMembership,
+    opts: {
+      limit: number;
+      offset: number;
+      status?: 'posted' | 'reversed';
+      from?: string;
+      to?: string;
+    },
+  ) {
+    return this.repo.runTenantTransaction(tenant.businessId, tenant.userId, (tx) =>
+      tx.listBusinessDebtPayments(tenant.businessId, opts),
     );
   }
 
@@ -1519,7 +1563,6 @@ export class CommerceService {
       issuedAt: now,
     };
 
-    await tx.insertReceipt(receipt);
     const payment = await tx.insertDebtPayment({
       id: debtPaymentId,
       businessId: tenant.businessId,
@@ -1536,6 +1579,7 @@ export class CommerceService {
       allocations,
       receipt,
     });
+    await tx.insertReceipt(receipt);
 
     await tx.recordAudit({
       businessId: tenant.businessId,
@@ -1888,6 +1932,136 @@ export class CommerceService {
           salesCount: stats.count,
           grossSales: formatKobo(stats.grossKobo),
           netSales: formatKobo(stats.grossKobo - stats.reversedKobo),
+        }));
+    });
+  }
+
+  async getSalesByCategoryReport(
+    tenant: ActiveTenantMembership,
+    query: z.infer<typeof ReportDateRangeQuerySchema>,
+  ): Promise<SalesByCategoryRow[]> {
+    return this.repo.runTenantTransaction(tenant.businessId, tenant.userId, async (tx) => {
+      const [salesPage, productsPage, categoriesPage] = await Promise.all([
+        tx.listSales(tenant.businessId, {
+          limit: 10_000,
+          offset: 0,
+          from: query.from,
+          to: query.to,
+        }),
+        tx.listProducts(tenant.businessId, {
+          limit: 10_000,
+          offset: 0,
+        }),
+        tx.listCategories(tenant.businessId, {
+          limit: 1_000,
+          offset: 0,
+        }),
+      ]);
+
+      const categoryNameById = new Map<string, string>(
+        categoriesPage.items.map((c) => [c.id, c.name]),
+      );
+      const productCategoryId = new Map<string, string | null>(
+        productsPage.items.map((p) => [p.id, p.categoryId]),
+      );
+
+      const agg = new Map<
+        string,
+        {
+          categoryId: string | null;
+          categoryName: string;
+          unitsMilli: bigint;
+          revenueKobo: bigint;
+          cogsKobo: bigint;
+        }
+      >();
+
+      let grandTotalRevenueKobo = 0n;
+
+      for (const s of salesPage.items) {
+        if (s.status === 'voided') continue;
+
+        const returnedByItemId = new Map<
+          string,
+          { qtyMilli: bigint; reversedKobo: bigint; restockCogsKobo: bigint }
+        >();
+        for (const ret of s.returns) {
+          for (const ri of ret.items) {
+            const cur = returnedByItemId.get(ri.saleItemId) ?? {
+              qtyMilli: 0n,
+              reversedKobo: 0n,
+              restockCogsKobo: 0n,
+            };
+            const qm = parseQtyToMilli(ri.quantityReturned);
+            cur.qtyMilli += qm;
+            cur.reversedKobo += parseMoneyToKobo(ri.lineReversedTotal);
+            if (ri.disposition === 'restock') {
+              cur.restockCogsKobo += multiplyQtyByKobo(qm, parseMoneyToKobo(ri.unitCostSnapshot));
+            }
+            returnedByItemId.set(ri.saleItemId, cur);
+          }
+        }
+
+        for (const item of s.items) {
+          const catId = productCategoryId.get(item.productId) ?? null;
+          const key = catId ?? '__uncategorized__';
+          const catName = (catId ? categoryNameById.get(catId) : null) ?? 'Uncategorized';
+
+          const retInfo = returnedByItemId.get(item.id);
+          const itemQty = parseQtyToMilli(item.quantity);
+          const netQty =
+            retInfo && itemQty > retInfo.qtyMilli
+              ? itemQty - retInfo.qtyMilli
+              : retInfo
+                ? 0n
+                : itemQty;
+          const itemRev = parseMoneyToKobo(item.lineTotal);
+          const netRev =
+            retInfo && itemRev > retInfo.reversedKobo
+              ? itemRev - retInfo.reversedKobo
+              : retInfo
+                ? 0n
+                : itemRev;
+          const itemCogs = parseMoneyToKobo(item.lineCogs);
+          const netCogs =
+            retInfo && itemCogs > retInfo.restockCogsKobo
+              ? itemCogs - retInfo.restockCogsKobo
+              : retInfo
+                ? 0n
+                : itemCogs;
+
+          const cur = agg.get(key) ?? {
+            categoryId: catId,
+            categoryName: catName,
+            unitsMilli: 0n,
+            revenueKobo: 0n,
+            cogsKobo: 0n,
+          };
+          cur.unitsMilli += netQty;
+          cur.revenueKobo += netRev;
+          cur.cogsKobo += netCogs;
+          agg.set(key, cur);
+          grandTotalRevenueKobo += netRev;
+        }
+      }
+
+      return [...agg.values()]
+        .filter((row) => row.revenueKobo > 0n)
+        .sort((a, b) =>
+          b.revenueKobo > a.revenueKobo ? 1 : b.revenueKobo < a.revenueKobo ? -1 : 0,
+        )
+        .slice(0, query.limit)
+        .map((row) => ({
+          categoryId: row.categoryId,
+          categoryName: row.categoryName,
+          unitsSold: formatMilliQty(row.unitsMilli),
+          revenue: formatKobo(row.revenueKobo),
+          cogs: formatKobo(row.cogsKobo),
+          grossProfit: formatKobo(row.revenueKobo - row.cogsKobo),
+          sharePercent:
+            grandTotalRevenueKobo > 0n
+              ? Math.round((Number(row.revenueKobo) / Number(grandTotalRevenueKobo)) * 100)
+              : 0,
         }));
     });
   }

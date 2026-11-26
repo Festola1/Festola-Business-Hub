@@ -1,4 +1,17 @@
-import type { CustomerItem, ProductItem, TenderMethod } from './commerce-api';
+import type {
+  BusinessDebtPaymentItem,
+  CurrentSubscriptionSummary,
+  CustomerItem,
+  FinancialSummaryReport,
+  InventoryValuationReport,
+  ProductCategory,
+  ProductItem,
+  SaleRecord,
+  SalesByCategoryRow,
+  SalesByDayPoint,
+  TenderMethod,
+} from './commerce-api';
+import { emitWorkspaceEvent } from './workspace-events';
 
 export interface QueuedOfflineSale {
   clientOperationUuid: string;
@@ -63,6 +76,22 @@ export interface OfflineBootstrapCache {
   syncCursor: string;
   products: ProductItem[];
   customers: CustomerItem[];
+}
+
+export interface DashboardCachedSnapshot {
+  syncedAt: string;
+  range: string;
+  summary: FinancialSummaryReport | null;
+  valuation: InventoryValuationReport | null;
+  salesSeries: SalesByDayPoint[];
+  salesByCategory: SalesByCategoryRow[];
+  categories: ProductCategory[];
+  allProducts: ProductItem[];
+  lowStock: ProductItem[];
+  recentSales: SaleRecord[];
+  customers: CustomerItem[];
+  debtPayments: BusinessDebtPaymentItem[];
+  subscription: CurrentSubscriptionSummary | null;
 }
 
 const IDB_NAME = 'festola_business_hub_offline_v1';
@@ -197,6 +226,7 @@ export function enqueueOfflineSale(
   } catch {
     return next;
   }
+  emitWorkspaceEvent(businessId, ['sync', 'sales']);
   return next;
 }
 
@@ -215,6 +245,7 @@ export function removeQueuedOfflineSales(
   } catch {
     return remaining;
   }
+  emitWorkspaceEvent(businessId, ['sync', 'sales', 'inventory']);
   return remaining;
 }
 
@@ -241,6 +272,7 @@ export function enqueueOfflineExpense(
   } catch {
     return next;
   }
+  emitWorkspaceEvent(businessId, ['sync', 'expenses']);
   return next;
 }
 
@@ -267,7 +299,16 @@ export function enqueueOfflineCreditPayment(
   } catch {
     return next;
   }
+  emitWorkspaceEvent(businessId, ['sync', 'debts']);
   return next;
+}
+
+export function getTotalQueuedOfflineCount(businessId: string): number {
+  return (
+    listQueuedOfflineSales(businessId).length +
+    listQueuedOfflineExpenses(businessId).length +
+    listQueuedOfflineCreditPayments(businessId).length
+  );
 }
 
 export function saveOfflineBootstrapCache(businessId: string, cache: OfflineBootstrapCache): void {
@@ -306,6 +347,72 @@ export function saveWorkspaceSuppliers(businessId: string, suppliers: SupplierRe
   try {
     window.localStorage.setItem(key, JSON.stringify(suppliers));
     mirrorToIndexedDb(key, suppliers);
+  } catch {
+    return;
+  }
+}
+
+function dashboardSnapshotKey(userId: string, businessId: string, range: string): string {
+  return `festola.offline.dashboard.${userId}.${businessId}.${range}`;
+}
+
+export function saveDashboardSnapshot(
+  userId: string,
+  businessId: string,
+  range: string,
+  snapshot: DashboardCachedSnapshot,
+): void {
+  const key = dashboardSnapshotKey(userId, businessId, range);
+  try {
+    window.localStorage.setItem(key, JSON.stringify(snapshot));
+    mirrorToIndexedDb(key, snapshot);
+  } catch {
+    return;
+  }
+}
+
+export function loadDashboardSnapshot(
+  userId: string,
+  businessId: string,
+  range: string,
+): DashboardCachedSnapshot | null {
+  try {
+    const exact = window.localStorage.getItem(dashboardSnapshotKey(userId, businessId, range));
+    if (exact) {
+      return JSON.parse(exact) as DashboardCachedSnapshot;
+    }
+    const prefix = `festola.offline.dashboard.${userId}.${businessId}.`;
+    let latest: DashboardCachedSnapshot | null = null;
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith(prefix)) {
+        const raw = window.localStorage.getItem(k);
+        if (!raw) continue;
+        const parsed = JSON.parse(raw) as DashboardCachedSnapshot;
+        if (!latest || parsed.syncedAt > latest.syncedAt) {
+          latest = parsed;
+        }
+      }
+    }
+    return latest;
+  } catch {
+    return null;
+  }
+}
+
+export function clearDashboardSnapshotsForUser(userId: string): void {
+  try {
+    const prefix = `festola.offline.dashboard.${userId}.`;
+    const toRemove: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith(prefix)) {
+        toRemove.push(k);
+      }
+    }
+    for (const k of toRemove) {
+      window.localStorage.removeItem(k);
+    }
   } catch {
     return;
   }

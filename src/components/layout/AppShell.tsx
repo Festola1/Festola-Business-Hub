@@ -9,6 +9,7 @@ import {
   CreditCard,
   Crown,
   FileClock,
+  Home,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -24,14 +25,17 @@ import {
   UserCog,
   Users,
   Wallet,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { useAuth } from '../../contexts/AuthContext';
 import { useOnlineStatus } from '../../hooks/useOnlineStatus';
 import { fetchNotifications } from '../../lib/notifications-api';
-import { listQueuedOfflineSales } from '../../lib/offline-store';
+import { getTotalQueuedOfflineCount } from '../../lib/offline-store';
 import { canRoleAccess, getVisibleNavItems, type NavIconKey } from '../../lib/permissions';
+import { useWorkspaceEventTick } from '../../lib/workspace-events';
 import { PWAInstallButton } from '../pwa/PWAInstallButton';
 import { ErrorBoundary } from '../ui/ErrorBoundary';
 import { Modal } from '../ui/Modal';
@@ -95,6 +99,17 @@ export function AppShell() {
   const profileMenuRef = useRef<HTMLDivElement>(null);
 
   const activeBusinessId = activeMembership?.businessId ?? null;
+  const syncEventTick = useWorkspaceEventTick(activeBusinessId, [
+    'sync',
+    'sales',
+    'expenses',
+    'debts',
+  ]);
+  const notificationEventTick = useWorkspaceEventTick(activeBusinessId, [
+    'notifications',
+    'sales',
+    'inventory',
+  ]);
 
   useEffect(() => {
     if (!accessToken || !activeBusinessId) {
@@ -118,7 +133,7 @@ export function AppShell() {
     return () => {
       cancelled = true;
     };
-  }, [accessToken, activeBusinessId, location.pathname, tenantEpoch]);
+  }, [accessToken, activeBusinessId, location.pathname, tenantEpoch, notificationEventTick]);
 
   useEffect(() => {
     if (!profileMenuOpen) return;
@@ -149,7 +164,9 @@ export function AppShell() {
   const systemNav = visibleNav.filter((item) => item.section === 'system');
   const canManageBilling = canRoleAccess(activeMembership.role, 'billing.manage');
   const canManageSettings = canRoleAccess(activeMembership.role, 'settings.manage');
-  const queuedOfflineCount = listQueuedOfflineSales(activeMembership.businessId).length;
+  // Re-evaluate queued operations reactively whenever syncEventTick increments
+  const queuedOfflineCount =
+    syncEventTick >= 0 ? getTotalQueuedOfflineCount(activeMembership.businessId) : 0;
 
   const primaryMobile = visibleNav.filter((item) => item.mobilePrimary);
   const customersFallback = visibleNav.find((item) => item.path === '/app/customers');
@@ -328,6 +345,16 @@ export function AppShell() {
               </ul>
             </div>
           )}
+          <div className="mt-4 border-t border-white/15 pt-3">
+            <Link
+              to="/"
+              title={sidebarCollapsed ? 'Landing Page' : undefined}
+              className="flex min-h-[38px] items-center gap-3 rounded-xl px-3 py-2 text-[13px] font-medium text-red-50/90 transition-colors hover:bg-white/15 hover:text-white"
+            >
+              <Home className="h-4 w-4 shrink-0" aria-hidden="true" />
+              {!sidebarCollapsed && <span className="truncate">Landing Page</span>}
+            </Link>
+          </div>
         </nav>
 
         {/* Bottom Subscription Plan Card (matching dashboard visual reference) */}
@@ -412,14 +439,24 @@ export function AppShell() {
             <span className="font-semibold text-[#151B2B]">{profile?.fullName}</span> ·{' '}
             <span>{formatRoleLabel(activeMembership.role)}</span>
           </p>
-          <button
-            type="button"
-            onClick={() => void handleSignOut()}
-            className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-semibold text-[#151B2B] hover:bg-[#F8F8FA]"
-          >
-            <LogOut className="h-4 w-4" aria-hidden="true" />
-            <span>Sign out</span>
-          </button>
+          <div className="space-y-2">
+            <Link
+              to="/"
+              onClick={() => setMobileMenuOpen(false)}
+              className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl border border-[#E5E7EB] bg-[#F8F8FA] px-3 py-2 text-sm font-semibold text-[#151B2B] hover:border-[#D90000]/30 hover:bg-[#FFF1F1] hover:text-[#D90000]"
+            >
+              <Home className="h-4 w-4" aria-hidden="true" />
+              <span>Landing Page</span>
+            </Link>
+            <button
+              type="button"
+              onClick={() => void handleSignOut()}
+              className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl border border-[#E5E7EB] bg-white px-3 py-2 text-sm font-semibold text-[#151B2B] hover:bg-[#F8F8FA]"
+            >
+              <LogOut className="h-4 w-4" aria-hidden="true" />
+              <span>Sign out</span>
+            </button>
+          </div>
         </div>
       </Modal>
 
@@ -490,8 +527,54 @@ export function AppShell() {
               )}
             </div>
 
-            {/* Right: Notifications, Install PWA, User Profile Dropdown */}
-            <div className="flex shrink-0 items-center gap-2.5">
+            {/* Right: Online/Sync status, Landing Page, Notifications, Install PWA, User Profile Dropdown */}
+            <div className="flex shrink-0 items-center gap-2">
+              <Link
+                to="/app/sync"
+                aria-label={
+                  !isOnline
+                    ? `Offline mode, ${queuedOfflineCount} queued`
+                    : queuedOfflineCount > 0
+                      ? `Online, ${queuedOfflineCount} pending sync`
+                      : 'Online and synced'
+                }
+                title="Connectivity & offline sync status"
+                className={`inline-flex h-10 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-semibold whitespace-nowrap transition-colors ${
+                  !isOnline
+                    ? 'border-[#F59E0B] bg-[#FFFBEB] text-[#92400E]'
+                    : queuedOfflineCount > 0
+                      ? 'border-[#FECACA] bg-[#FEF2F2] text-[#991B1B]'
+                      : 'border-[#E4E4E7] bg-white text-[#18181B] hover:bg-[#F4F5F7]'
+                }`}
+              >
+                {!isOnline ? (
+                  <WifiOff className="h-3.5 w-3.5 shrink-0 text-[#D97706]" aria-hidden="true" />
+                ) : queuedOfflineCount > 0 ? (
+                  <RefreshCw className="h-3.5 w-3.5 shrink-0 text-[#991B1B]" aria-hidden="true" />
+                ) : (
+                  <Wifi className="h-3.5 w-3.5 shrink-0 text-[#16A34A]" aria-hidden="true" />
+                )}
+                <span className="hidden md:inline">
+                  {!isOnline
+                    ? queuedOfflineCount > 0
+                      ? `Offline · ${queuedOfflineCount} queued`
+                      : 'Offline'
+                    : queuedOfflineCount > 0
+                      ? `Sync pending (${queuedOfflineCount})`
+                      : 'Online · Synced'}
+                </span>
+              </Link>
+
+              <Link
+                to="/"
+                aria-label="Go to landing page"
+                title="Go to landing page"
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-[#E5E7EB] bg-white px-3 text-xs font-semibold whitespace-nowrap text-[#151B2B] transition-colors hover:border-[#D90000]/30 hover:bg-[#FFF1F1] hover:text-[#D90000]"
+              >
+                <Home className="h-4 w-4 shrink-0 text-[#D90000]" aria-hidden="true" />
+                <span className="hidden lg:inline">Landing Page</span>
+              </Link>
+
               <div className="hidden xl:block">
                 <PWAInstallButton variant="secondary" />
               </div>
@@ -582,6 +665,15 @@ export function AppShell() {
                         <span>Subscription &amp; Billing</span>
                       </Link>
                     )}
+                    <Link
+                      to="/"
+                      role="menuitem"
+                      onClick={() => setProfileMenuOpen(false)}
+                      className="flex items-center gap-2.5 px-4 py-2 text-xs font-medium text-[#151B2B] hover:bg-[#F8F8FA]"
+                    >
+                      <Home className="h-4 w-4 text-[#6B7280]" aria-hidden="true" />
+                      <span>Landing Page</span>
+                    </Link>
                     <div className="my-1 border-t border-[#F1F5F9]" />
                     <button
                       type="button"

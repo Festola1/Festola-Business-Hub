@@ -97,6 +97,7 @@ describe('Stage 09 AppShell Keyboard A11y, ErrorBoundary & Honest Stage Labeling
       <MemoryRouter initialEntries={['/app/dashboard']}>
         <AuthContext.Provider value={makeAuthValue({ selectBusiness })}>
           <Routes>
+            <Route path="/" element={<div>Public Landing View</div>} />
             <Route path="/app" element={<AppShell />}>
               <Route
                 path="dashboard"
@@ -115,10 +116,12 @@ describe('Stage 09 AppShell Keyboard A11y, ErrorBoundary & Honest Stage Labeling
       </MemoryRouter>,
     );
 
-    // Skip link targets #main-content
+    // Skip link targets #main-content and Landing Page link targets /
     const skipLink = screen.getByRole('link', { name: /Skip to main content/i });
     expect(skipLink).toHaveAttribute('href', '#main-content');
     expect(document.getElementById('main-content')).toBeInTheDocument();
+    const landingLink = screen.getByRole('link', { name: /Go to landing page/i });
+    expect(landingLink).toHaveAttribute('href', '/');
 
     // Unread notification counter loads from Stage 08 GET /api/v1/notifications
     await waitFor(() => {

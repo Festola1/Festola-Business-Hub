@@ -1,12 +1,20 @@
 import { Edit3, Eye, Plus, Search, Truck, Wallet } from 'lucide-react';
-import { useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Button } from '../../components/ui/Button';
 import { AlertBanner, Card, EmptyState, PageHeader } from '../../components/ui/Feedback';
 import { FormField, Input, Select } from '../../components/ui/FormControls';
 import { Modal } from '../../components/ui/Modal';
 import { useToast } from '../../components/ui/ToastProvider';
 import { useAuth } from '../../contexts/AuthContext';
+import { useFirebase } from '../../contexts/FirebaseContext';
+import { isFirestoreEnabled } from '../../firebase';
 import type { TenderMethod } from '../../lib/commerce-api';
+import {
+  createFirestoreSupplier,
+  recordFirestoreSupplierPayment,
+  subscribeToFirestoreSuppliers,
+  updateFirestoreSupplierDetails,
+} from '../../lib/firestore-sync';
 import { formatDateTime, formatMoney, generateUuid } from '../../lib/format';
 import {
   listWorkspaceSuppliers,
@@ -16,12 +24,15 @@ import {
 
 export default function SuppliersPage() {
   const { activeMembership } = useAuth();
+  const { firebaseReady, firebaseUser } = useFirebase();
   const { pushToast } = useToast();
   const businessId = activeMembership?.businessId ?? '';
+  const cloudSyncActive = Boolean(isFirestoreEnabled && firebaseReady && firebaseUser && businessId);
 
   const [suppliers, setSuppliers] = useState<SupplierRecord[]>(() =>
     businessId ? listWorkspaceSuppliers(businessId) : [],
   );
+  const [cloudError, setCloudError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
 
   // Add / Edit Modal
@@ -44,6 +55,27 @@ export default function SuppliersPage() {
   const [payMethod, setPayMethod] = useState<Exclude<TenderMethod, 'credit'>>('transfer');
   const [payRef, setPayRef] = useState('');
   const [payError, setPayError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!cloudSyncActive || !firebaseUser || !businessId) {
+      return;
+    }
+
+    const unsubscribe = subscribeToFirestoreSuppliers(
+      businessId,
+      firebaseUser.uid,
+      (rows) => {
+        setCloudError(null);
+        setSuppliers(rows);
+        saveWorkspaceSuppliers(businessId, rows);
+      },
+      (err) => {
+        setCloudError(err.message);
+      },
+    );
+
+    return () => unsubscribe();
+  }, [cloudSyncActive, firebaseUser, businessId]);
 
   const persist = (next: SupplierRecord[]) => {
     setSuppliers(next);
@@ -124,6 +156,18 @@ export default function SuppliersPage() {
           : s,
       );
       persist(next);
+      if (cloudSyncActive && businessId) {
+        void updateFirestoreSupplierDetails(businessId, editingId, {
+          name: name.trim(),
+          phone: phone.trim(),
+          email: email.trim(),
+          address: address.trim(),
+          productsSupplied: productsSupplied.trim(),
+          outstandingBalance: parsedBalance,
+        }).catch((err: unknown) => {
+          setCloudError(err instanceof Error ? err.message : 'Unable to sync supplier update.');
+        });
+      }
       pushToast('Supplier details updated.', 'success');
     } else {
       const created: SupplierRecord = {
@@ -139,6 +183,13 @@ export default function SuppliersPage() {
         createdAt: new Date().toISOString(),
       };
       persist([created, ...suppliers]);
+      if (cloudSyncActive && firebaseUser && businessId) {
+        void createFirestoreSupplier(businessId, firebaseUser.uid, created).catch(
+          (err: unknown) => {
+            setCloudError(err instanceof Error ? err.message : 'Unable to sync new supplier.');
+          },
+        );
+      }
       pushToast('Supplier added to workspace directory.', 'success');
     }
     setEditorOpen(false);
@@ -163,16 +214,29 @@ export default function SuppliersPage() {
       referenceNote: payRef.trim() || 'Supplier settlement',
     };
 
+    const nextBalance = Math.max(0, Number((paySupplier.outstandingBalance - amount).toFixed(2)));
+    const nextPayments = [paymentRecord, ...paySupplier.payments];
+
     const next = suppliers.map((s) =>
       s.id === paySupplier.id
         ? {
             ...s,
-            outstandingBalance: Math.max(0, Number((s.outstandingBalance - amount).toFixed(2))),
-            payments: [paymentRecord, ...s.payments],
+            outstandingBalance: nextBalance,
+            payments: nextPayments,
           }
         : s,
     );
     persist(next);
+    if (cloudSyncActive && businessId) {
+      void recordFirestoreSupplierPayment(
+        businessId,
+        paySupplier.id,
+        nextBalance,
+        nextPayments,
+      ).catch((err: unknown) => {
+        setCloudError(err instanceof Error ? err.message : 'Unable to sync supplier payment.');
+      });
+    }
     const updated = next.find((s) => s.id === paySupplier.id) ?? null;
     if (profileSupplier?.id === paySupplier.id) {
       setProfileSupplier(updated);
@@ -197,12 +261,24 @@ export default function SuppliersPage() {
         }
       />
 
-      <AlertBanner tone="info" title="Local Workspace Directory (Backend Sync Ready)">
-        Supplier profiles and settlements are stored per business in your browser&apos;s offline
-        IndexedDB storage and link directly to Purchase Orders. Connect the dedicated{' '}
-        <span className="font-mono-tabular">/api/v1/suppliers</span> backend table when ready to
-        sync across devices.
-      </AlertBanner>
+      {cloudError && (
+        <AlertBanner tone="error" title="Cloud Sync Error">
+          {cloudError}
+        </AlertBanner>
+      )}
+
+      {cloudSyncActive ? (
+        <AlertBanner tone="success" title="Firebase Cloud Firestore Live Sync">
+          Supplier profiles and payment settlements are synced in real time to your secured Cloud
+          Firestore workspace and mirrored locally for offline resilience.
+        </AlertBanner>
+      ) : (
+        <AlertBanner tone="info" title="Local Workspace Directory (Firebase Sync Ready)">
+          Supplier profiles and settlements are stored per business in your browser&apos;s offline
+          IndexedDB storage and link directly to Purchase Orders. Sign in with Google (Firebase) to
+          sync suppliers in real time across devices.
+        </AlertBanner>
+      )}
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">

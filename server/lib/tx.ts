@@ -132,8 +132,12 @@ export function requireIdempotencyKey(
   next();
 }
 
+const inFlightIdempotentOps = new Map<string, Promise<unknown>>();
+
 /**
  * Executes an idempotent write operation scoped strictly to `(businessId, idempotencyKey)`.
+ * - Concurrent duplicate requests sharing the same key serialize cleanly so the operation
+ *   runs at most once, and subsequent callers replay the exact committed response.
  * - Replayed key with identical payload hash returns cached response with `replayed: true`.
  * - Replayed key with a different payload hash throws `409 IDEMPOTENCY_CONFLICT`.
  */
@@ -147,43 +151,63 @@ export async function executeIdempotentOperation<T>(params: {
   successStatusCode?: number;
   execute: () => Promise<T>;
 }): Promise<{ statusCode: number; body: { success: true; data: T }; replayed: boolean }> {
+  const lockKey = `${params.businessId}:${params.idempotencyKey}`;
   const requestHash = buildCanonicalRequestHash(params.method, params.routeKey, params.payload);
-  const existing = await params.store.get(params.businessId, params.idempotencyKey);
 
-  if (existing) {
-    if (existing.requestHash !== requestHash) {
-      throw new ApiError(
-        409,
-        'IDEMPOTENCY_CONFLICT',
-        'This Idempotency-Key was already used with a different request payload.',
-      );
+  const runOnce = async (): Promise<{
+    statusCode: number;
+    body: { success: true; data: T };
+    replayed: boolean;
+  }> => {
+    const existing = await params.store.get(params.businessId, params.idempotencyKey);
+
+    if (existing) {
+      if (existing.requestHash !== requestHash) {
+        throw new ApiError(
+          409,
+          'IDEMPOTENCY_CONFLICT',
+          'This Idempotency-Key was already used with a different request payload.',
+        );
+      }
+      return {
+        statusCode: existing.responseStatusCode,
+        body: existing.responseBody as { success: true; data: T },
+        replayed: true,
+      };
     }
-    return {
-      statusCode: existing.responseStatusCode,
-      body: existing.responseBody as { success: true; data: T },
-      replayed: true,
-    };
+
+    const data = await params.execute();
+    const statusCode = params.successStatusCode ?? 201;
+    const body = { success: true as const, data };
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + IDEMPOTENCY_TTL_DAYS * 86_400_000).toISOString();
+
+    await params.store.save({
+      businessId: params.businessId,
+      idempotencyKey: params.idempotencyKey,
+      requestMethod: params.method.toUpperCase(),
+      requestPath: params.routeKey,
+      requestHash,
+      responseStatusCode: statusCode,
+      responseBody: body,
+      createdAt: now.toISOString(),
+      expiresAt,
+    });
+
+    return { statusCode, body, replayed: false };
+  };
+
+  const prior = inFlightIdempotentOps.get(lockKey);
+  const current = (prior ? prior.catch(() => undefined).then(runOnce) : runOnce());
+  inFlightIdempotentOps.set(lockKey, current);
+
+  try {
+    return await current;
+  } finally {
+    if (inFlightIdempotentOps.get(lockKey) === current) {
+      inFlightIdempotentOps.delete(lockKey);
+    }
   }
-
-  const data = await params.execute();
-  const statusCode = params.successStatusCode ?? 201;
-  const body = { success: true as const, data };
-  const now = new Date();
-  const expiresAt = new Date(now.getTime() + IDEMPOTENCY_TTL_DAYS * 86_400_000).toISOString();
-
-  await params.store.save({
-    businessId: params.businessId,
-    idempotencyKey: params.idempotencyKey,
-    requestMethod: params.method.toUpperCase(),
-    requestPath: params.routeKey,
-    requestHash,
-    responseStatusCode: statusCode,
-    responseBody: body,
-    createdAt: now.toISOString(),
-    expiresAt,
-  });
-
-  return { statusCode, body, replayed: false };
 }
 
 /**

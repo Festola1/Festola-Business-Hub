@@ -67,6 +67,7 @@ export default defineConfig(() => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           // Never intercept or cache authenticated /api/v1/* calls in the Service Worker;
           // offline business data is managed strictly in tenant-scoped IndexedDB (Stage P-05).
           navigateFallbackDenylist: [/^\/api\//],

@@ -222,6 +222,18 @@ export function inviteStaffMember(
   });
 }
 
+export function revokeStaffInvitation(
+  accessToken: string,
+  businessId: string,
+  invitationId: string,
+) {
+  return apiRequest<{ invitation: StaffInvitation }>(`/staff/invitations/${invitationId}/revoke`, {
+    method: 'POST',
+    accessToken,
+    businessId,
+  });
+}
+
 export function updateStaffMemberRole(
   accessToken: string,
   businessId: string,
